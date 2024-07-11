@@ -1,3 +1,4 @@
+
 /* Задача: провести ABC и XYZ анализ аптечной сети. XYZ анализ проводится по количеству проданного товара с группировкой по неделям, т.к. данных не слишком много
 Так же сделано доп. условие, чтобы товар продавался как минимум в 4-х разных неделях.
 */
@@ -70,6 +71,7 @@ combinations as (
 )
 select product1, product2, count(distinct cheque) as cnt
 from combinations
+where product1 !='ПАКЕТ' and product2 !='ПАКЕТ' 
 group by product1, product2
 order by cnt desc
 
