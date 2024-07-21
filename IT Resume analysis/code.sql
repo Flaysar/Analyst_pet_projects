@@ -4,24 +4,21 @@ with my_users as (
 	where company_id = 1
 ),
 /* Активность пользователя по дням*/
-users_activity as (
+days_users_activity as (
 	select user_id, date(created_at) as activ_date
 	from coderun c
-	join users u
+	join my_users u
 	on u.id = c.user_id
-	where u.company_id = 1
 	union
 	select user_id, date(created_at) as activ_date
 	from codesubmit c2 
-	join users u
+	join my_users u
 	on u.id = c2.user_id
-	where u.company_id = 1
 	union
 	select user_id, date(created_at) as activ_date
 	from teststart t
-	join users u
+	join my_users u
 	on u.id = t.user_id
-	where u.company_id = 1
 ),
 --
 /* Сколько всего раз пользователи заходили в месяц (даже если заходил один и тот же человек) */
@@ -60,7 +57,7 @@ users_joined_on_month as (
 /* Кол-во активных пользователей по месяцам */
 MAU as (
 	select to_char(activ_date, 'YYYY-MM') as month, count(distinct user_id) as mau
-	from users_activity ua
+	from days_users_activity ua
 	group by month
 	order by month
 ),
@@ -87,15 +84,15 @@ users_joined_on_week as (
 /*Генерирую интервал недель, чтобы использовать join-ом и не потерять недели без активности*/
 gen_weeks as (
 	select to_char(generate_series(
-	(select min(activ_date) from users_activity), 
-	(select max(activ_date) from users_activity),
+	(select min(activ_date) from days_users_activity), 
+	(select max(activ_date) from days_users_activity),
 	'1 day'::interval), 'YYYY-WW') as week
 	group by week
 ),
 /* Кол-во активных пользователей по неделям */
 wau as (
 	select week, count(distinct user_id) as wau
-	from users_activity ua
+	from days_users_activity ua
 	full join gen_weeks g
 	on to_char(activ_date, 'YYYY-WW') = g.week 
 	group by  week
@@ -116,18 +113,17 @@ wau_research as (
 --
 /*Генерирую интервал дней, чтобы использовать join-ом и не потерять дни без активности*/
 gen_days as (
-	select to_char(generate_series(
-	(select min(activ_date) from users_activity), 
-	(select max(activ_date) from users_activity),
-	'1 day'::interval), 'YYYY-MM-DD') as day_date
-	group by day_date
+	select date(generate_series(
+	(select min(activ_date) from days_users_activity), 
+	(select max(activ_date) from days_users_activity),
+	'1 day'::interval)) as day_date
 ),
 /* Кол-во активных пользователей по дням */
 DAU as (
 	select day_date, count(distinct user_id) as dau
-	from users_activity ua
+	from days_users_activity ua
 	full join gen_days g
-	on to_char(activ_date, 'YYYY-MM-DD') = g.day_date
+	on date(activ_date) = g.day_date
 	group by day_date
 	order by day_date
 ),
@@ -161,20 +157,21 @@ all_users_activity as (
 ),
 /*Использую сгенерированный интервал дней, написанный выше*/
 dayweek_activ as (
-	select date(gd.day_date) as date, 
+	select gd.day_date as date, 
 	to_char(date(gd.day_date), 'Day') as day_week, 
 	count(user_id) as action_cnt, -- это количество действий пользователей
 	count(distinct user_id) as users_cnt -- это количество самих пользователей
 	from all_users_activity ua
 	right join gen_days gd
-	on to_char(activ_date, 'YYYY-MM-DD') = gd.day_date
+	on date(activ_date) = gd.day_date
 	group by date, day_week
 	order by date
 ),
 avg_dayweek_activ as (
 	select day_week, sum(action_cnt) as action_cnt, 
 	round(avg(action_cnt), 2) as avg_actions, 
-	round(avg(users_cnt), 2) as avg_users
+	round(avg(users_cnt), 2) as avg_users,
+	percentile_disc(0.5) within group (order by action_cnt) as median_actions
 	from dayweek_activ
 	group by day_week
 	order by avg_actions desc
@@ -314,30 +311,61 @@ entries_without_activ as (
 	from userentry u
 	join my_users mu
 	on u.user_id = mu.id
-	left join users_activity ua
+	left join days_users_activity ua
 	on u.user_id = ua.user_id and date(u.entry_at) = ua.activ_date
 ),
 --
 --
-/* Посчитаю среднее в минутах время на платформе за заход */
--- Буду считать только активные заходы. Использую созданную ранее таблицу all_users_activity
-session_duration as (
-	select user_id, date(activ_date), min(activ_date), max(activ_date),
-	extract(epoch from max(activ_date) - min(activ_date))/60 as duration
+--
+/* Средняя длительность сессии */
+/* Посчитаю разницу в минутах между активностями пользователя. 
+ * Если она больше 60 - буду считать это новой сессией
+ * Использую таблицу all_users_activity */
+activity_timediff as (
+	select *,
+	lead(activ_date) over w as next_activ,
+	extract(epoch from lead(activ_date) over w - activ_date)/60 as diff,
+	case
+		when extract(epoch from lead(activ_date) over w - activ_date)/60 <60 then 0
+		else 1
+	end as new_session
 	from all_users_activity
-	group by user_id, date(activ_date)
+	window w as (partition by user_id order by activ_date)
 ),
-users_sessions_duration as (
-	select user_id, round(avg(duration)::numeric, 2) as avg_durat,
-	percentile_disc(0.5) within group (order by duration) as median 
+session_markers AS (
+    SELECT *,
+    SUM(new_session) OVER (PARTITION BY user_id 
+    ORDER BY activ_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS session_id,
+    case 
+		when diff>60 then 0
+		else diff
+	end as new_diff
+    FROM activity_timediff
+),
+session_duration as (
+	select user_id, session_id, sum(new_diff) as duration
+	from session_markers
+	group by user_id, session_id
+	order by user_id, session_id
+),
+avg_session_duration as (
+	select round(avg(duration)) as avg_minute,
+	round(percentile_disc(0.5) within group (order by duration)) as median_minute
+	from session_duration
+),
+user_session_info as (
+	select user_id, 
+	count(session_id) as session_cnt,
+	round(avg(duration)) as avg_minute,
+	(select avg_minute from avg_session_duration) as avg_session_dur
 	from session_duration
 	group by user_id
-),
-avg_and_median_ses_duration as (
-	select avg(duration) as avg_durat,
-	percentile_disc(0.5) within group (order by duration) as median
-	from session_duration
-),
+)
+select perc, percentile_disc(perc) within group (order by avg_minute) as duration 
+from user_session_info, pg_catalog.generate_series(0.1, 1, 0.1) perc
+group by perc
+
+
 --
 --
 --
