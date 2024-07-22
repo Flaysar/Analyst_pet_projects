@@ -307,6 +307,102 @@ user_session_info as (
 Результат запроса:  
 ![таблица](images/user_session_info.png)  
 
+Помимо этого, можно посмотреть распределение длительностей сессий по перцентилям с шагом 0.1. Для этого использую generate_series(0.1, 1, 0.1), названный как perc, и команду percentile_cont.
+```
+duration_percentile as (
+	select perc, percentile_cont(perc) within group (order by avg_minute) as duration 
+	from user_session_info, pg_catalog.generate_series(0.1, 1, 0.1) perc
+	group by perc
+),
+```  
+Результат запроса:  
+![таблица](images/duration_percentile.png)  
 
+Вывод: теперь преподаватель может видеть заинтересованность каждого пользователя, смотря на его среднюю длительность сессии или на каждую сессию в отдельности. Также он может посмотреть, в какой "когорте" находится пользователь по длительности. Если с низкой длительносью - возможно у пользователя возникают какие-то трудности с использованием платформы или с самими заданиями и преподаватель может помочь это исправить.  
 
-### Самые популярные задачи
+### Самые популярные задачи  
+Популярность буду оценивать по двум критериям - количество пользователей, которые пытались решить эту задачу (таблица codesubmit) и сколько раз вообще пользователь взаимодействовал с задачей (запуск кода и проверка решения, таблицы coderun и codesubmit).
+Для первого критерия объединю таблицы codesubmit и my_users обычным join-ом, таблицу problem right join-ом, чтобы не потерять те задачи, которые вообще не решали, и таблицы languagetoproblem и language. Извлеку из полученной таблицы problem_id, complexity (сложность), название задания, язык програмирования для задачи, количество пользователей, которые пытались решить эту задачу, процент верных попыток, который буду искать через case и ранг задачи по кол-ву пользователей. Отсортирую по количеству пользователей.
+```
+problems_info as (
+	select p.id as problem_id, 
+	complexity, 
+	p.name, 
+	lg.name as lang,
+	count(distinct user_id) as users_cnt,
+	round(count(case when is_false = 0 then 1 end)*100.0/count(*),2) as perc_right,
+	rank() over (order by count(distinct user_id) desc) as rank_in_users
+	from codesubmit c 
+	join my_users mu
+	on c.user_id = mu.id
+	right join problem p 
+	on p.id = c.problem_id
+	join languagetoproblem l  
+	on l.pr_id = p.id
+	join language lg
+	on lg.id = l.lang_id
+	where is_visible is true  -- чтобы пользователи видели эти задачи
+	group by p.id, complexity, p.name, lg.name
+	order by users_cnt desc
+)
+```  
+Результат запроса:  
+![таблица](images/problems_info.png)  
+
+Второй критерий - количество взаимодействий пользователя с задачей. Этот показатель тоже покажет, какие задачи популярные - может быть их не выставляли на проверку, т.к. не получалось, но при этом много работали с ней, потому что она интересная и т.д.
+В запросе для начала объединяю таблицы codesubmit и coderun через union all, записываю это в CTE problem_starts.  
+Далее к этой таблице присоединяю right join-ом problem, а затем languagetoproblem и language. Извлекаю problem_id, сложность, название задачи, язык программирования, кол-во "активаций" задачи и ранг по активациям. Ранг получаю для того, чтобы потом объединить starts_count и problems_info и сравнить полученные результаты - задачи с наибольшим кол-вом пользователей также и самые "трогаемые", или нет.
+```
+problem_starts as (
+	select problem_id 
+	from coderun cr
+	join my_users mu
+	on mu.id = cr.user_id
+	union all
+	select problem_id
+	from codesubmit cs
+	join my_users mu
+	on mu.id = cs.user_id
+),
+starts_count as (
+	select problem_id, 
+	complexity, 
+	p.name, 
+	lg.name,
+	count(problem_id) as starts_cnt,
+	rank() over (order by count(problem_id) desc) as starts_rank
+	from problem_starts ps
+	right join problem p
+	on p.id = ps.problem_id
+	join languagetoproblem l  
+	on l.pr_id = p.id
+	join language lg
+	on lg.id = l.lang_id
+	group by problem_id, complexity, p.name, lg.name
+)
+```  
+Результат запроса:  
+![таблица](images/starts_count.png)   
+
+Теперь можно объединить эти запросы и поискать самые популярные задачи по этим критериям. Я считаю, что кол-во пользователей, которые пытались решить задачу, важнее, поэтому сортирую по ней. Но с помощью второго критерия можно более правильно отранжировать задачи, например, если по кол-ву пользователей задачи мало отличаются, но у второй значительно больше активаций, то поставим её выше.
+```
+problems_rank as (
+	select sc.problem_id, 
+	sc.name,
+	sc.complexity,
+	sc.lang, 
+	rank_in_users, starts_rank
+	from starts_count  sc
+	join problems_info p
+	on sc.problem_id = p.problem_id
+	order by rank_in_users, starts_rank
+	limit 20
+)
+```  
+Результат запроса:  
+![таблица](images/problems_rank.png)  
+
+Дополнительно можно фильтровать по сложности, языку или домашнему/не домашнему.  
+
+Выводы: самые популярные задачи - по SQL первой сложности, в основном это дз. Если убрать дз - то ранг по пользователям сильно падает, и в таком случае самые популярные - тестовое задание в альфа-банк с SQL и некоторые задачи на python. Если смотреть в разрезе языка, то python менее популярен, самые популярные у него это также дз.  
+
