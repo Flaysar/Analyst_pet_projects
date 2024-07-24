@@ -360,12 +360,12 @@ user_session_info as (
 	(select avg_minute from avg_session_duration) as avg_session_dur
 	from session_duration
 	group by user_id
-)
-select perc, percentile_disc(perc) within group (order by avg_minute) as duration 
-from user_session_info, pg_catalog.generate_series(0.1, 1, 0.1) perc
-group by perc
-
-
+),
+duration_percentile as (
+	select perc, percentile_cont(perc) within group (order by avg_minute) as duration 
+	from user_session_info, pg_catalog.generate_series(0.1, 1, 0.1) perc
+	group by perc
+),
 --
 --
 --
@@ -381,17 +381,10 @@ language_problems_count as (
 ),
 --
 --
-/* Процент успешных решений задач */
-perc_right as (
-	select round(count(case when is_false = 0 then 1 end)*100.0/count(*), 2) as perc_right
-	from codesubmit c
-	join my_users mu
-	on c.user_id = mu.id
-),
---
 /* В разрезе сложности*/
 perc_right_with_compl as (
-	select complexity, round(count(case when is_false = 0 then 1 end)*100.0/count(*), 2) as perc_right,
+	select complexity, 
+	round(count(case when is_false = 0 then 1 end)*100.0/count(*), 2) as perc_right,
 	count(*) as submit_cnt,
 	count(distinct problem_id) as problem_cnt,
 	count(distinct mu.id) as user_cnt
@@ -423,54 +416,74 @@ perc_right_with_lang as (
 --
 /*Посмотрим, сколько человек пыталось решить каждую из задач и процент успешных проверок*/
 problems_info as (
-	select p.id as problem_id, complexity, name, count(distinct user_id) as users_cnt,
-	round(count(case when is_false = 0 then 1 end)*100.0/count(*),2) as perc_right
+	select p.id as problem_id, 
+	complexity, 
+	p.name, 
+	lg.name as lang,
+	count(distinct user_id) as users_cnt,
+	round(count(case when is_false = 0 then 1 end)*100.0/count(*),2) as perc_right,
+	rank() over (order by count(distinct user_id) desc) as rank_in_users
 	from codesubmit c 
 	join my_users mu
 	on c.user_id = mu.id
 	right join problem p 
 	on p.id = c.problem_id
+	join languagetoproblem l  
+	on l.pr_id = p.id
+	join language lg
+	on lg.id = l.lang_id
 	where is_visible is true  -- чтобы пользователи видели эти задачи
-	group by p.id, complexity, name
+	group by p.id, complexity, p.name, lg.name
 	order by users_cnt desc
 ),
 --
 --
-/* Сколько попыток в среднем решал задачу пользователь */
-attempts_cnt as (
-	select c.user_id, c.problem_id, p.complexity, count(*) as cnt,
-	min(is_false) as not_done
-	from my_users mu
-	join codesubmit c
-	on mu.id = c.user_id
-	join problem p
-	on p.id = c.problem_id
-	group by c.user_id, c.problem_id, p.complexity
+--
+/* Все взаимодействия с задачей */
+problem_starts as (
+	select problem_id 
+	from coderun cr
+	join my_users mu
+	on mu.id = cr.user_id
+	union all
+	select problem_id
+	from codesubmit cs
+	join my_users mu
+	on mu.id = cs.user_id
 ),
 --
-/*Сколько в среднем уходит на задачу попыток, и решил ли её кто-то в итоге*/
-avg_attempts_problem as (
-	select problem_id, avg(cnt) as avg_attempts, min(not_done) as not_done
-	from attempts_cnt
-	group by problem_id
-	order by avg_attempts desc
+/* Кол-во активности и её ранг по задаче */
+starts_count as (
+	select problem_id, 
+	complexity, 
+	p.name, 
+	lg.name as lang,
+	count(problem_id) as starts_cnt,
+	rank() over (order by count(problem_id) desc) as starts_rank
+	from problem_starts ps
+	right join problem p
+	on p.id = ps.problem_id
+	join languagetoproblem l  
+	on l.pr_id = p.id
+	join language lg
+	on lg.id = l.lang_id
+	group by problem_id, complexity, p.name, lg.name
+),
+problems_rank as (
+	select sc.problem_id, 
+	sc.name,
+	sc.complexity,
+	sc.lang, 
+	rank_in_users, starts_rank
+	from starts_count  sc
+	join problems_info p
+	on sc.problem_id = p.problem_id
+	where sc.lang = 'Python'
+	order by rank_in_users, starts_rank
+	limit 20
 ),
 --
-/* Количество и процент успешно решенных/нерешенных в итоге задач */
-problems_done as (
-	select not_done, count(*),
-	round(count(*)*100.0/sum(count(*)) over (), 2) as "%"
-	from attempts_cnt
-	group by not_done
-),
-/* Сколько в среднем попыток на задачу определенной сложности, если задача была выполнена */
-attempts_by_complexity as (
-	select complexity, avg(cnt),
-	percentile_disc(0.5) within group (order by cnt) 
-	from attempts_cnt
-	where not_done = 0
-	group by complexity
-),
+--
 --
 --
 /* Статистика, какие задачи человек решал и получилось ли у него это сделать */
@@ -483,7 +496,8 @@ user_problems as (
 	group by user_id, username, problem_id
 	order by user_id, problem_id
 ),
-/* Статистика, какие задачи человек решал и получилось ли у него это сделать, а также сколько задач он пытался решить, сколько решил всего и процент успеха*/
+/* Статистика, какие задачи человек пытался решить и получилось ли у него это сделать,
+ * а также сколько задач он пытался решить, сколько решил всего и процент успеха*/
 user_problems_info as (
 	select *,
 	count(problem_id) over w as cnt_problems,
@@ -494,10 +508,90 @@ user_problems_info as (
 ),
 /* Среднее и медиана процента успешно решенных задач */
 avg_right_problems as (
-	select round(avg("right (%)"), 2) as avg_right,
+	select
+	round(avg("right (%)"), 2) as avg_right,
 	percentile_disc(0.5) within group (order by "right (%)") as median_right 
 	from user_problems_info
 ),
+--
+--
+--
+--
+/* Поищем кол-во попыток на решение задачи */
+rank_codesubmit as (
+	select user_id, 
+	problem_id, 
+	created_at,
+	is_false,
+	row_number() over (partition by user_id, problem_id order by created_at) as row_num
+	from codesubmit c 
+	join my_users mu
+	on c.user_id = mu.id
+	order by user_id, created_at 
+),
+--
+/* Номер самой первой успешной попытки */
+min_user_attempts as (
+	select user_id, problem_id,
+	min(row_num) as right_attempt
+	from rank_codesubmit
+	where is_false = 0
+	group by user_id, problem_id
+),
+--
+/* Среднее кол-во попыток на задачу */
+avg_attempts_for_problem as (
+	select problem_id, round(avg(right_attempt), 2) as avg_attempt
+	from min_user_attempts
+	group by problem_id
+),
+--
+/* Добавим problems_info */
+problems_attempts_info as (
+	select atp.*, pi.perc_right, users_cnt,
+	pi.name, pi.complexity, pi.lang
+	from avg_attempts_for_problem atp
+	JOIN problems_info pi
+	ON pi.problem_id = atp.problem_id
+),
+--
+/* Сколько в среднем попыток на задачу определенной сложности,
+ если задача была выполнена */
+attempts_at_complexity as (
+	select complexity, round(avg(avg_attempt), 2) as avg_attempt
+	from problems_attempts_info
+	group by complexity
+),
+--
+/* Сколько в среднем попыток на задачу по языку, если задача была выполнена */
+attempts_at_language as (
+	select lang, round(avg(avg_attempt), 2) as avg_attempt
+	from problems_attempts_info
+	group by lang
+),
+--
+--
+--
+/*  Процент успешных попыток пользователя по задаче */
+user_attempts_to_problem as (
+	select user_id, problem_id,
+	count(case when is_false = 0 then 1 end) as right_attempt_cnt,
+	count(*) as attempt_cnt,
+	round(count(case when is_false = 0 then 1 end)*100.0/count(*), 2) as "right (%)"
+	from codesubmit c
+	join my_users mu
+	on c.user_id = mu.id
+	group by user_id, problem_id
+),
+--
+/*  Процент успешных попыток пользователя в общем */
+user_avg_right_attempt as (
+	select user_id, 
+	round(avg("right (%)"), 2) as "right (%)"
+	from user_attempts_to_problem
+	group by user_id
+),
+--
 --
 --
 --
@@ -505,20 +599,34 @@ avg_right_problems as (
 --
 /* Количество тестов, которые решал каждый студент*/
 users_test as (
-	select user_id, count(*) as test_cnt
-	from teststart t
-	join my_users mu
-	on t.user_id = mu.id
-	group by user_id
+	select mu.id as user_id, count(distinct test_id) as test_cnt
+	from teststart ts
+	right join my_users mu
+	on ts.user_id = mu.id
+	group by mu.id
+	order by test_cnt desc
 ),
 /* Сколько раз пользователи приступали к какому-либо тесту */
 teststart_count as (
-	select test_id, count(*) as start_cnt
-	from teststart t
+	select test_id, t.name, count(*) as start_cnt
+	from teststart ts
 	join my_users mu
-	on mu.id = t.user_id
-	group by test_id
+	on mu.id = ts.user_id
+	join test t
+	on t.id = ts.test_id
+	group by test_id, t.name
 	order by start_cnt desc
+),
+--
+testing_users as (
+	select round(count(case when test_cnt > 0 then 1 end)*100.0/count(*), 2) as perc_testing_users,
+	round(avg(test_cnt), 2) as avg_test_cnt
+	from users_test
+),
+users_test_info as (
+	select * 
+	from users_test ut
+	cross join testing_users teu
 ),
 --
 /* Ответы пользователя в каждом тесте и сравнение с правильным*/
@@ -563,10 +671,14 @@ testresult_research as (
 	round(avg("right (%)"), 2) as "avg_right (%)"
 	from users_tests_info
 	group by test_id
-),
+)
+select * from users_answers
+
 --
 --
 --
+--
+/* Заходы */
 --
 /* Какая разница в часах между заходами на платформу? */
 entries_difference as (
@@ -647,3 +759,5 @@ all_transactions_info as (
 	sum(case when type_id not in (1, 23, 24, 25, 26, 27, 28) then summ end) as accurals
 	from transaction_type_sum
 )
+
+select * from transactiontype t 
