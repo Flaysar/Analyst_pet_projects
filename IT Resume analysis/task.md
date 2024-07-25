@@ -9,7 +9,7 @@ IT Resume - платформа с задачами и тестами по про
 
 Задача - поставить себя на место преподавателя корпоративного клиента, который очень переживает за процесс обучения своих студентов. Ему очень важно знать, какие сложности испытывают студенты, что у них получается, в каком месте нужно допилить обучающую программу и так далее. А еще поставьте себя на место финансового директора - возможно, ему будет интересно, а за что именно они нам платят деньги. А может быть еще что-то будет интересно посмотреть генеральному директору? А маркетологу? А методистам?
 Затем подготовить разностороннее исследование, чтобы корпоративные клиенты платформы были довольны и все вопросы у них сразу отпали. В качестве подопытного берется клиент с id=1.
-
+[link](что-хочет-знать-сотрудник)
 Для каждого заинтересованного лица приведу интересные для него метрики и рассчитаю их
 
 # Что хочет знать сотрудник?
@@ -34,11 +34,12 @@ IT Resume - платформа с задачами и тестами по про
 ## Финансовый директор
 В базе нет данных о затратах на доступ к платформе, поэтому буду считать, что для финансового директора важны количественные показатели платформы, т.е. сколько бонусов получает компания от взаимодействия с IT Resume.
 Поэтому для него важно знать:
-* Сколько всего проверок решений и сколькоо на пользователя - это можно назвать целевой метрикой для фин.директора, ведь чем больше проверок, тем более явно виден плюс автоматической проверки IT Resume, т.к. иначе каждую задачу приходилось бы проверять преподавателю  
+* Сколько всего проверок решений и сколько на пользователя - это можно назвать целевой метрикой для фин.директора, ведь чем больше проверок, тем более явно виден плюс автоматической проверки IT Resume, т.к. иначе каждую задачу приходилось бы проверять преподавателю  
 #### Другие интересующие показатели:
 * Количество задач и тестов - если их слишком мало, то и налаживать какую-то автоматическую проверку не обязательно
-* Количество активных пользователей и их заходы - может быть корпопативные пользователи почти не заходят на платформу, а если и заходят, то ничего не делают
-* Удержание и отток - может корпоративные студенты резко "отпадают" спустя какой-то срок (Т.к. платформа образовательная, не обязательно, чтобы пользователи заходили каждый день, поэтому буду считать rolling retention и rolling chorn rate, чтобы оценить общую вовлеченность пользователей)
+* Количество пришедших пользователей по месяцам - поможет оценить эффективность маркетинга.
+* MAU (month active users) и WAU - может быть корпопативные пользователи почти не заходят на платформу, а если и заходят, то ничего не делают
+* Удержание (retention) и отток (churn rate)к - может корпоративные студенты резко "отпадают" спустя какой-то срок (Т.к. платформа образовательная, не обязательно, чтобы пользователи заходили каждый день, поэтому буду считать rolling retention и rolling chorn rate, чтобы оценить общую вовлеченность пользователей)
 Отдельно можно посмотреть на распределение codecoins, если компания напрямую закупает их для своих студентов, чтобы они эффективнее взаимодействовали с платформой. Если это так, то фин.директору также интересно:
 * Общее распределение codecoins по списаниям и пополнениям
 * Распределение баланса пользователей
@@ -722,10 +723,217 @@ testresult_research as (
 Результат запроса:  
 ![таблица](images/testresult_research.png)  
 #### Вывод
-Всего лишь 10 из 24 тестов хотя бы раз запускали. При этом запусков все равно небольшое кол-во, за исключением 19 теста, но большинство из них выполнил пользователь с id 43. Хоть здесь и мало информации, но даже по ней преподаватель может оценить сложность каждого теста.  
+Всего лишь 10 из 24 тестов хотя бы раз запускали. При этом запусков все равно небольшое кол-во, за исключением 19 теста, но большинство из них выполнил пользователь с id 43. Стоит заметить, что полученные данные расходятся с таблицей teststart_count, т.е. почему-то информация о начале теста есть, а информации о завершении - нет. Возможно, произошел какой-то сбой на сервере. Но, хоть здесь и мало информации, даже по ней преподаватель может оценить сложность теста.  
 
 
  # Финансовый директор
 
+### Сколько всего проверок решений и сколько на пользователя 
+Для начала через union all таблиц codesbmit и testresult получу id пользователей, работы которых нужно проверить (задача или тест)  
+```
+all_checks as (
+	select user_id
+	from codesubmit c
+	join my_users mu
+	on mu.id = c.user_id
+	union all
+	select user_id
+	from testresult t
+	join my_users mu
+	on mu.id = t.user_id
+)
+```  
+Далее сгруппирую по id и получу кол-во проверок по пользователю  
+```
+all_user_checks as( 
+	select user_id, count(user_id) as cnt_check
+	from all_checks
+	group by user_id
+)
+```  
+Результат запроса:  
+![таблица](images/all_user_checks.png)  
 
+И затем просуммирую всё количество проверок, получив общее кол-во, получу среднее кол-во проверок на пользователя и медиана проверок.
+```
+checks_info as (
+	select sum(cnt_check) as cnt_check,
+	round(avg(cnt_check)) as avg_check_for_user,
+	percentile_disc(0.5) within group (order by cnt_check) as median_check
+	from all_user_checks
+)
+```  
+Результат запроса:  
+![таблица](images/checks_info.png)  
+#### Вывод
+С этой информацией финансовый директор может просчитать, насколько выгодно сотрудничество с IT Resume. Например, если для проверок нужен бы был специально нанятый для этого человек, которому платили бы за каждрую проверку, можно было бы посчитать выгоду от автоматизации проверки.  
+
+### Количество задач и тестов
+```
+problems_and_tests_cnt as (
+	select 'problems' as type, count(id) as cnt
+	from problem
+	union 
+	select 'tests', count(id)
+	from test
+)
+```  
+Результат запроса:  
+![таблица](images/problems_and_tests_cnt.png)   
+
+### Количество пришедших пользователей по месяцам
+Возьму таблицу my_users, извлеку с помощью to_char месяц регистрации, сгруппирую по нему и посчитаю кол-во пришедших уникальных пользователей.  
+```
+users_joined_on_month as (
+	select to_char(date_joined, 'YYYY-MM') as month, count(distinct id) as cnt_joined
+	from my_users
+	group by month
+)
+```  
+Результат запроса:  
+![таблица](images/users_joined_on_month.png)   
+
+### MAU и WAU
+Для начала найду кол-во активных пользователей (т.е. тех, кто делал хоть что-то кроме захода) по месяцам.
+```
+MAU as (
+	select to_char(activ_date, 'YYYY-MM') as month, count(distinct user_id) as mau
+	from days_users_activity ua
+	group by month
+	order by month
+)
+```  
+Результат запроса:  
+![таблица](images/mau.png)   
+
+Далее объединяю две последние полученные таблицы через full join по совпадению месяцев, убираю те, где месячная активность пользователей была меньше 4. Извлекаю месяц, месячную активность, количество пришедших в этом месяце, суммарное кол-во пришедших пользователей за этот и прошлые месяца, отношение кол-ва активных в этом месяце пользователей к общему числу пришедних, и среднее кол-во активности за все месяцы. 
+```
+mau_research as (
+	select m.month as month, mau, coalesce (cnt_joined, 0) as cnt_joined, 
+	sum(cnt_joined) over (order by coalesce(m.month, u.month)) as all_users,
+	coalesce(round(mau*100.0/sum(cnt_joined) over (order by coalesce(m.month, u.month)), 2),0) as "activ_users (%)",
+	round(avg(mau)  over ()) as avg_mau
+	from MAU m
+	full join users_joined_on_month u
+	on m.month = u.month
+	where mau > 3 -- убрали месяца со слишком малыми значениями
+	order by month
+)
+```  
+Результат запроса:  
+![таблица](images/mau_research.png)   
+#### Вывод
+Наибольшая активность была 2022-04. Можно увидеть, что далеко не все пришедшие пользователи остаются на платформе на длительный срок. Возможно они получают то, за чем пришли, и уходят довольными, либо же наоборот, их что-то не устраивает на платформе, поэтому они перестают заходить.  
+
+Проделаю то же самое и для недель:
+```
+users_joined_on_week as (
+	select to_char(date_joined, 'YYYY-WW') as week, count(distinct id) as cnt_joined
+	from my_users
+	group by week
+)
+```  
+Дополнительно генерирую интервал недель, чтобы использовать join-ом и не потерять недели без активности
+```
+gen_weeks as (
+	select to_char(generate_series(
+	(select min(activ_date) from days_users_activity), 
+	(select max(activ_date) from days_users_activity),
+	'1 day'::interval), 'YYYY-WW') as week
+	group by week
+)
+```
+Результат запроса:  
+![таблица](images/gen_weeks.png)   
+Можно видеть, что первая активная неделя была 2021-38.
+
+Найду кол-во активных пользователей по неделям   
+```
+wau as (
+	select week, count(distinct user_id) as wau
+	from days_users_activity ua
+	full join gen_weeks g
+	on to_char(activ_date, 'YYYY-WW') = g.week 
+	group by  week
+	order by week
+)
+```
+Ищу процент активных пользователей, среднее WAU
+```
+wau_research as (
+	select coalesce(w.week, uw.week) as week, coalesce(wau,0) as wau,
+	coalesce (cnt_joined, 0) as cnt_joined,
+	sum(cnt_joined) over (order by coalesce(w.week, uw.week)) as all_users,
+	coalesce(round(wau*100.0/sum(cnt_joined) over (order by coalesce(w.week, uw.week)), 2),0) as "activ_users (%)",
+	round(avg(wau)  over ()) as avg_wau
+	from wau w
+	full join users_joined_on_week uw
+	on w.week = uw.week
+)
+```
+Результат запроса:  
+![таблица](images/wau_research.png)  
+#### Вывод
+Усредненный wau составляет 9 человек. Это примерно 1/3 от mau - не самый хороший показатель, но не совсем ужасный. Без прихода новых пользователей недельная активность довольно быстро падает, это определенно плохой показатель - вряд ли пользователь получает необходимые ему знания всего за неделю. Стоит разобраться, почему пользователи уходят.
+Возможно необходимо провести качественнное исследование, опросив студентов, почему они ушли или что их не устраивает  
+
+### Удержание (retention) и отток (churn rate)
+Буду считать не просто retention,а rolling retention, и обратный для него churn rate. Выбор использовать именно rolling retention обусловлен тем, что платформа IT Resume - образовательная, и для неё не сильно важно, чтобы пользователи заходили каждый день. Человек может отдыхать в выходные и заниматься обучением в будние дни, или наоборот, или как угодно иначе. Поэтому важно оценить не конкретные дни, а промежутки, например, какой процент людей заходил хотя бы раз после 6 дня захода на платформу.  
+Считать буду по когортам - в какой месяц пользователь зарегистрировался, к такой когорте он и принадлежит.  
+Для начала получу таблицу заходов пользователей. Для этого объединю таблицы userentry и my_users. Извлеку id пользователя, дату регистрации, дату захода, разницу между ними и когорту пользователя с помощью to_char.
+```
+entry_info as (
+	select u.user_id, date(date_joined) as joined, date(entry_at) as entry,  
+	extract(days from entry_at - date_joined) as diff,
+	to_char(date_joined, 'YYYY-MM') as cohort
+	from userentry u
+	join my_users m
+	on u.user_id = m.id
+	order by user_id, diff
+)
+```  
+Результат запроса:  
+![таблица](images/entry_info.png)  
+
+Далее через длинный запрос, в котором я считаю отношение кол-ва зашедших хотя бы раз в определенный день и все после него к кол-ву зашедших в 0-вой день (т.е. в день регистрации). Считаю это через distinct case user_id, у которых разница (diff) больше или равен указанному значению. Для отслеживания выберу 0, 1, 3, 7, 14, 21, 30, 45, 60, 90 и 120 дни - их достаточно, чтобы оценить заходы пользователь. Группирую по когортам, и дополнительно задаю условие, чтобы в когорте было больше 3 человек (иначе статистика будет совсем нерепрезентативна) 
+```
+rolling_retention as (
+	select cohort, count(distinct user_id) as cohort_size,
+	round(count(distinct case when diff >= 0 then user_id end)*100.0/
+		count(distinct case when diff >= 0 then user_id end), 2) as "0 (%)",
+	round(count(distinct case when diff >= 1 then user_id end)*100.0/
+		count(distinct case when diff >= 0 then user_id end), 2) as "1 (%)",
+	round(count(distinct case when diff >= 3 then user_id end)*100.0/
+		count(distinct case when diff >= 0 then user_id end), 2) as "3 (%)",
+	round(count(distinct case when diff >= 7 then user_id end)*100.0/
+		count(distinct case when diff >= 0 then user_id end), 2) as "7 (%)",
+	round(count(distinct case when diff >= 14 then user_id end)*100.0/
+		count(distinct case when diff >= 0 then user_id end), 2) as "14 (%)",
+	round(count(distinct case when diff >= 21 then user_id end)*100.0/
+		count(distinct case when diff >= 0 then user_id end), 2) as "21 (%)",
+	round(count(distinct case when diff >= 30 then user_id end)*100.0/
+		count(distinct case when diff >= 0 then user_id end), 2) as "30 (%)",
+	round(count(distinct case when diff >= 45 then user_id end)*100.0/
+		count(distinct case when diff >= 0 then user_id end), 2) as "45 (%)",
+	round(count(distinct case when diff >= 60 then user_id end)*100.0/
+		count(distinct case when diff >= 0 then user_id end), 2) as "60 (%)",
+	round(count(distinct case when diff >= 90 then user_id end)*100.0/
+		count(distinct case when diff >= 0 then user_id end), 2) as "90 (%)",
+	round(count(distinct case when diff >= 120 then user_id end)*100.0/
+		count(distinct case when diff >= 0 then user_id end), 2) as "120 (%)" --интересно посмотреть за активными группами 2021-11 и 2021-12 месяцев
+	from entry_info
+	group by cohort
+	having count(distinct user_id)>3 -- уберем слишком малые когорты
+)
+```  
+Результат запроса:  
+![таблица](images/rolling_retention.png)  
+
+#### Вывод
+
+
+
+### Общее распределение codecoins по списаниям и пополнениям
+
+### Распределение баланса пользователей
 
