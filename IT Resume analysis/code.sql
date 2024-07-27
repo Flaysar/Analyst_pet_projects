@@ -61,11 +61,12 @@ MAU as (
 	group by month
 	order by month
 ),
+--
 /* Ищем процент активных пользователей, среднее MAU*/
 mau_research as (
-	select coalesce(m.month, u.month) as month, mau, coalesce (cnt_joined, 0) as cnt_joined, 
+	select m.month as month, mau, coalesce (cnt_joined, 0) as cnt_joined, 
 	sum(cnt_joined) over (order by coalesce(m.month, u.month)) as all_users,
-	coalesce(round(mau*100.0/sum(cnt_joined) over (order by coalesce(m.month, u.month)), 2),0) as "% activ_users",
+	coalesce(round(mau*100.0/sum(cnt_joined) over (order by coalesce(m.month, u.month)), 2),0) as "activ_users (%)",
 	round(avg(mau)  over ()) as avg_mau
 	from MAU m
 	full join users_joined_on_month u
@@ -100,7 +101,7 @@ wau as (
 ),
 /* Ищем процент активных пользователей, среднее WAU*/
 wau_research as (
-	select coalesce(w.week, uw.week) as week, wau,
+	select coalesce(w.week, uw.week) as week, coalesce (wau, 0) as wau,
 	coalesce (cnt_joined, 0) as cnt_joined,
 	sum(cnt_joined) over (order by coalesce(w.week, uw.week)) as all_users,
 	coalesce(round(wau*100.0/sum(cnt_joined) over (order by coalesce(w.week, uw.week)), 2),0) as "activ_users (%)",
@@ -293,7 +294,7 @@ LT as (
 --
 --
 /* Посчитаю rolling churn rate */
-Rolling_churn_rate as (
+rolling_churn_rate as (
 	select cohort, 100 - "1 (%)" as "1 (%)",
 	100 - "2 (%)" as "2 (%)",
 	100 - "3 (%)" as "3 (%)",
@@ -369,15 +370,24 @@ duration_percentile as (
 --
 --
 --
+/* Кол-во заданий и тестов */
+problems_and_tests_cnt as (
+	select 'problems' as type, count(id) as cnt
+	from problem
+	union 
+	select 'tests', count(id)
+	from test
+),
+--
 --
 /* Количество задач на язык и всего*/
 language_problems_count as (	
-	select  lang_id, l.name, count(*) as problem_cnt,
+	select  l.name, count(*) as problem_cnt,
 	sum(count(*)) over () as all_problems
 	from languagetoproblem lp
 	join language l
 	on l.id = lp.lang_id
-	group by lang_id, l.name
+	group by l.name
 ),
 --
 --
@@ -648,10 +658,10 @@ users_answers as (
 	join my_users mu
 	on mu.id = t3.user_id
 	join test te
-	on te.id = t2.test_id
+	on te.id = t3.test_id
 	where coalesce(answer_id, t.id) = t.id -- оставляет ответы, которые совпадают с одним из вариантов ответа, и null-ы
 	group by user_id, t.question_id, t2.value, t2.test_id, answer_id, t3.created_at, te.name -- сделано для того, чтобы убрать множественный null
-	order by user_id, question_id, test_id
+	order by user_id, test_id, rank_order, question_id
 ),
 --
 /* Статистика прохождения тестов по пользователю с процентом верных ответов*/
@@ -665,15 +675,42 @@ users_tests_info as (
 --
 /* Исследование проходимости тестов*/
 testresult_research as (
-	select test_id, count(*) as cnt,
+	select test_id, t.name, count(*) as running_cnt,
 	max(all_quest) as all_quest,
 	round(avg(right_answer), 2) as avg_right_answer,
 	round(avg("right (%)"), 2) as "avg_right (%)"
-	from users_tests_info
-	group by test_id
-)
-select * from users_answers
-
+	from users_tests_info uti
+	join test t
+	on t.id = uti.test_id
+	group by test_id, t.name
+),
+--
+--
+--
+/* Кол-во проверок решений по задачам и ответам в тестах */
+all_checks as (
+	select user_id
+	from codesubmit c
+	join my_users mu
+	on mu.id = c.user_id
+	union all
+	select user_id
+	from testresult t
+	join my_users mu
+	on mu.id = t.user_id
+),
+all_user_checks as( 
+	select user_id, count(user_id) as cnt_check
+	from all_checks
+	group by user_id
+),
+checks_info as (
+	select sum(cnt_check) as cnt_check,
+	round(avg(cnt_check)) as avg_check_for_user,
+	percentile_disc(0.5) within group (order by cnt_check) as median_check
+	from all_user_checks
+),
+--
 --
 --
 --
@@ -710,8 +747,8 @@ avg_entries_diff as (
 /* Списания, пополнения и баланс пользователей */
 users_transactions as (
 	select user_id,
-	sum(case when type_id in (1, 23, 24, 25, 26, 27, 28) then -value end) as write_off,
-	sum(case when type_id not in (1, 23, 24, 25, 26, 27, 28) then value end) as accruals,
+	coalesce(sum(case when type_id in (1, 23, 24, 25, 26, 27, 28) then -value end), 0) as write_off,
+	coalesce(sum(case when type_id not in (1, 23, 24, 25, 26, 27, 28) then value end),0) as accruals,
 	sum(case when type_id in (1, 23, 24, 25, 26, 27, 28) then -value else value end) as balance
 	from transaction t
 	join my_users mu
@@ -727,18 +764,9 @@ avg_balance as (
 --
 --
 /* Распределение баланса пользователей по перцентилям */
-users_balance as (
-	select user_id,
-	sum(case when type_id in (1, 23, 24, 25, 26, 27, 28) then -value else value end) as balance
-	from transaction t
-	join my_users mu	
-	on t.user_id = mu.id
-	where value<=500
-	group by user_id
-),
 percentile_balance as (
-	select perc, percentile_disc(perc) within group (order by balance) as balance
-	from users_balance, generate_series(0.1, 1, 0.1) as perc
+	select perc, percentile_cont(perc) within group (order by balance) as balance
+	from users_transactions, generate_series(0.1, 1, 0.1) as perc
 	group by perc
 ),
 --
@@ -746,18 +774,24 @@ percentile_balance as (
 /*Общий объем транзакций CodeCoins по типам. */
 transaction_type_sum as (
 	select type_id, description,
-	sum(t.value) as summ
+	sum(t.value) as summ,
+	count(t.value) as cnt_actions
 	from transaction t
 	join transactiontype ty 
 	on ty.type = t.type_id
+	join my_users mu
+	on mu.id = t.user_id
+	where t.value <= 500
 	group by type_id, description
 	order by type_id
 ),
 all_transactions_info as (
 	select sum(summ) as all_transactions_value,
-	sum(case when type_id in (1, 23, 24, 25, 26, 27, 28) then summ end) as write_off,
-	sum(case when type_id not in (1, 23, 24, 25, 26, 27, 28) then summ end) as accurals
+	sum(case when type_id in (1, 23, 24, 25, 26, 27, 28) then cnt_actions end) as write_off_cnt,
+	sum(case when type_id in (1, 23, 24, 25, 26, 27, 28) then summ end) as write_off_value,
+	sum(case when type_id not in (1, 23, 24, 25, 26, 27, 28) then cnt_actions end) as accurals_cnt,
+	sum(case when type_id not in (1, 23, 24, 25, 26, 27, 28) then summ end) as accurals_value
 	from transaction_type_sum
 )
 
-select * from transactiontype t 
+
