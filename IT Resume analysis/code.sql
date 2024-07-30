@@ -23,7 +23,8 @@ days_users_activity as (
 --
 /* Сколько всего раз пользователи заходили в месяц (даже если заходил один и тот же человек) */
 months_userentry as (
-	select  to_char(entry_at, 'YYYY-MM') as month, count(*) as cnt,
+	select  to_char(entry_at, 'YYYY-MM') as month, count(*) as entry_cnt,
+	count(distinct user_id) as user_cnt,
 	rank() over (order by to_char(entry_at, 'YYYY-MM') desc) -- ранг использую в дальнейшем
 	from userentry u 
 	join my_users mu
@@ -34,15 +35,18 @@ months_userentry as (
 --
 /* Среднее количество и медиана заходов в месяц*/
 avg_months_userentry as (
-	select round(avg(cnt)) as month_avg_entries,
-	percentile_disc(0.5) within group (order by cnt) as month_median_entries
+	select round(avg(entry_cnt)) as month_avg_entries,
+	percentile_disc(0.5) within group (order by entry_cnt) as month_median_entries,
+	round(avg(user_cnt)) as month_avg_users,
+	percentile_disc(0.5) within group (order by user_cnt) as month_median_users
 	from months_userentry
-	where cnt > 5 -- уберем месяца со слишком малым числом входов
+	where entry_cnt > 5 -- уберем месяца со слишком малым числом входов
 ),
 --
 /* Среднее за последние три месяца*/
 last_3_month_entries as (
-	select round(avg(cnt)) as last_3_month_avg_entries
+	select round(avg(entry_cnt)) as avg_last_3_month_entries,
+	round(avg(user_cnt)) as avg_last_3_month_users
 	from months_userentry
 	where rank in (1, 2, 3)
 ),
@@ -55,8 +59,8 @@ users_joined_on_month as (
 	group by month
 ),
 /* Кол-во активных пользователей по месяцам */
-MAU as (
-	select to_char(activ_date, 'YYYY-MM') as month, count(distinct user_id) as mau
+activ_users_on_month as (
+	select to_char(activ_date, 'YYYY-MM') as month, count(distinct user_id) as users_cnt
 	from days_users_activity ua
 	group by month
 	order by month
@@ -64,14 +68,14 @@ MAU as (
 --
 /* Ищем процент активных пользователей, среднее MAU*/
 mau_research as (
-	select m.month as month, mau, coalesce (cnt_joined, 0) as cnt_joined, 
+	select m.month as month, users_cnt, coalesce (cnt_joined, 0) as cnt_joined, 
 	sum(cnt_joined) over (order by coalesce(m.month, u.month)) as all_users,
-	coalesce(round(mau*100.0/sum(cnt_joined) over (order by coalesce(m.month, u.month)), 2),0) as "activ_users (%)",
-	round(avg(mau)  over ()) as avg_mau
-	from MAU m
+	coalesce(round(users_cnt*100.0/sum(cnt_joined) over (order by coalesce(m.month, u.month)), 2),0) as "activ_users (%)",
+	round(avg(users_cnt)  over ()) as MAU
+	from activ_users_on_month m
 	full join users_joined_on_month u
 	on m.month = u.month
-	where mau > 3 -- убрали месяца со слишком малыми значениями
+	where users_cnt > 3 -- убрали месяца со слишком малыми значениями
 	order by month
 ),
 --
@@ -91,8 +95,8 @@ gen_weeks as (
 	group by week
 ),
 /* Кол-во активных пользователей по неделям */
-wau as (
-	select week, count(distinct user_id) as wau
+activ_users_on_week as (
+	select week, count(distinct user_id) as users_cnt
 	from days_users_activity ua
 	full join gen_weeks g
 	on to_char(activ_date, 'YYYY-WW') = g.week 
@@ -101,12 +105,12 @@ wau as (
 ),
 /* Ищем процент активных пользователей, среднее WAU*/
 wau_research as (
-	select coalesce(w.week, uw.week) as week, coalesce (wau, 0) as wau,
+	select coalesce(w.week, uw.week) as week, coalesce (users_cnt, 0) as users_cnt,
 	coalesce (cnt_joined, 0) as cnt_joined,
 	sum(cnt_joined) over (order by coalesce(w.week, uw.week)) as all_users,
-	coalesce(round(wau*100.0/sum(cnt_joined) over (order by coalesce(w.week, uw.week)), 2),0) as "activ_users (%)",
-	round(avg(wau)  over ()) as avg_wau
-	from wau w
+	coalesce(round(users_cnt*100.0/sum(cnt_joined) over (order by coalesce(w.week, uw.week)), 2),0) as "activ_users (%)",
+	round(avg(users_cnt)  over ()) as WAU
+	from activ_users_on_week w
 	full join users_joined_on_week uw
 	on w.week = uw.week
 ),
@@ -120,8 +124,8 @@ gen_days as (
 	'1 day'::interval)) as day_date
 ),
 /* Кол-во активных пользователей по дням */
-DAU as (
-	select day_date, count(distinct user_id) as dau
+activ_users_on_day as (
+	select day_date, count(distinct user_id) as users_cnt
 	from days_users_activity ua
 	full join gen_days g
 	on date(activ_date) = g.day_date
@@ -129,9 +133,9 @@ DAU as (
 	order by day_date
 ),
 /* DAU и среднее DAU */
-Average_DAU as (
-	select *, round(avg(dau) over ()) as avg_dau
-	from DAU
+DAU as (
+	select *, round(avg(users_cnt) over ()) as dau
+	from activ_users_on_day
 ),
 --
 --
@@ -280,16 +284,39 @@ retention as (
 ),
 --
 --
-/* Посчитаем LT через суммирование ретеншен*/
-all_days_retention as (
-	select day, count(distinct case when diff = day then user_id end)*100.0/count(distinct case when diff = 0 then user_id end) as perc
-	from entry_info
-	cross join (select generate_series(0, 90, 1) as day) t
-	group by day
+/* Посчитаем LT*/
+users_entries_different as (
+	select user_id, date(entry_at) as entry, 
+	date(lead(entry_at) over w) as next_entry,
+	extract(days from lead(entry_at) over w - entry_at) as diff
+	from userentry u
+	join my_users m
+	on u.user_id = m.id
+	where to_char(date_joined, 'YYYY-MM') not in ('2021-07', '2021-08') 
+	window w as (partition by user_id order by entry_at)
+),
+lifes_markers as (
+	select *, case 
+		when diff < 30 then 0
+		else 1
+	end as new_user_life
+	from users_entries_different
+	where next_entry is not null
+),
+lifes_id as (
+	select *, sum(new_user_life) over (partition by user_id 
+	rows between unbounded preceding and current row) as user_life_id
+	from lifes_markers
+),
+users_life_duration as (
+	select user_id, user_life_id, sum(case when new_user_life = 1 then 0 else diff end) as duration
+	from lifes_id
+	group by user_id, user_life_id
+	order by user_id
 ),
 LT as (
-	select round(sum(perc)/100, 2) as lifetime
-	from all_days_retention
+	select round(avg(duration)) as duration
+	from users_life_duration
 ),
 --
 --
@@ -389,6 +416,13 @@ language_problems_count as (
 	on l.id = lp.lang_id
 	group by l.name
 ),
+/* Количество задач на сложность*/
+complexity_problems_count as (
+	select complexity, count(*)
+	from problem
+	group by complexity
+),
+--
 --
 --
 /* В разрезе сложности*/
@@ -396,6 +430,7 @@ perc_right_with_compl as (
 	select complexity, 
 	round(count(case when is_false = 0 then 1 end)*100.0/count(*), 2) as perc_right,
 	count(*) as submit_cnt,
+	count(case when is_false = 0 then 1 end) as right_submit_cnt,
 	count(distinct problem_id) as problem_cnt,
 	count(distinct mu.id) as user_cnt
 	from codesubmit c
@@ -409,6 +444,7 @@ perc_right_with_compl as (
 perc_right_with_lang as (
 	select l.name, round(count(case when is_false = 0 then 1 end)*100.0/count(*), 2) as perc_right,
 	count(*) as submit_cnt,
+	count(case when is_false = 0 then 1 end) as right_submit_cnt,
 	count(distinct problem_id) as problem_cnt,
 	count(distinct mu.id) as user_cnt
 	from codesubmit c
@@ -451,12 +487,12 @@ problems_info as (
 --
 /* Все взаимодействия с задачей */
 problem_starts as (
-	select problem_id 
+	select user_id, problem_id 
 	from coderun cr
 	join my_users mu
 	on mu.id = cr.user_id
 	union all
-	select problem_id
+	select user_id, problem_id
 	from codesubmit cs
 	join my_users mu
 	on mu.id = cs.user_id
@@ -516,12 +552,78 @@ user_problems_info as (
 	from user_problems
 	window w as (partition by user_id)
 ),
+users_info as (
+	select distinct user_id, cnt_right, cnt_problems, "right (%)" from user_problems_info
+),
+avg_cnt_solved_problems as (
+	select round(avg(cnt_right)) as cnt_right, 
+	round(avg(cnt_problems)) as cnt_problems,
+	round(avg("right (%)"),2) as avg_right
+	from users_info
+),
+--
 /* Среднее и медиана процента успешно решенных задач */
-avg_right_problems as (
-	select
-	round(avg("right (%)"), 2) as avg_right,
-	percentile_disc(0.5) within group (order by "right (%)") as median_right 
-	from user_problems_info
+avg_solved_problems_per_user as (
+	select user_id, max(cnt_right)*100.0/max(cnt_problems) as perc_right
+	from user_problems_info 
+	group by user_id
+),
+--
+avg_solved_problems as (
+	select round(avg(perc_right), 2) as avg_solved, 
+	percentile_cont(0.5) within group (order by perc_right) as median_solved
+	from avg_solved_problems_per_user
+),
+--
+--
+/* А если взять те задачи, которые студент только начинал решать  
+ (запускал тест своего кода, но не отправлял его на проверку) */
+users_coderun_problems as (
+	select distinct ps.user_id, ps.problem_id,
+	coalesce((
+		select bool_or(done) from user_problems up 
+		where ps.user_id =up.user_id and up.problem_id = ps.problem_id
+	), false) as done
+	from problem_starts ps
+),
+users_perc_right_per_coderun_problems as (
+	select user_id, count(case when done is true then 1 end)*100.0/count(*) as perc_solved
+	from users_coderun_problems
+	group by user_id
+),
+avg_solved_coderun_problems as (
+	select round(avg(perc_solved), 2) as avg_solved,
+	percentile_cont(0.5) within group (order by perc_solved)  as median_solved
+	from users_perc_right_per_coderun_problems
+),
+--
+--
+--
+/* Посчитаю, сколько всего задач было решено*/ 
+solved_problems_cnt as (
+	select count(*) as cnt
+	from user_problems
+	where done is true
+),
+--
+/* В разрезе сложности */
+solved_problems_by_complexity_cnt as (
+	select complexity, count(*) as cnt
+	from user_problems up
+	join problem p
+	on p.id = up.problem_id
+	where done is true
+	group by complexity
+),
+solved_problems_cnt_by_lang as (
+	select l.name, count(*) as cnt
+	from user_problems up
+	join languagetoproblem lp
+	on up.problem_id = lp.pr_id
+	join language l
+	on l.id = lp.lang_id
+	where done is true
+	group by l.name
 ),
 --
 --
@@ -581,6 +683,15 @@ attempts_at_language as (
 ),
 --
 --
+/* Есть ли задачи, которые вообще не трогали */
+not_trying_problems as (
+	select *  
+	from problem
+	where id not in (select problem_id from problem_starts) and is_visible is True
+),
+--
+--
+--
 --
 /*  Процент успешных попыток пользователя по задаче */
 user_attempts_to_problem as (
@@ -607,7 +718,7 @@ user_avg_right_attempt as (
 --
 /* Тесты */
 --
-/* Количество тестов, которые решал каждый студент*/
+/* Количество тестов, которые решали студенты*/
 users_test as (
 	select mu.id as user_id, count(distinct test_id) as test_cnt
 	from teststart ts
@@ -683,6 +794,17 @@ testresult_research as (
 	join test t
 	on t.id = uti.test_id
 	group by test_id, t.name
+),
+--
+--
+not_starting_test as (
+	select * from test
+	where id not in (
+		select distinct test_id 
+		from teststart t
+		join my_users mu
+		on mu.id = t.user_id
+	)
 ),
 --
 --
@@ -793,5 +915,3 @@ all_transactions_info as (
 	sum(case when type_id not in (1, 23, 24, 25, 26, 27, 28) then summ end) as accurals_value
 	from transaction_type_sum
 )
-
-
