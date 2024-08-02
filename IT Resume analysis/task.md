@@ -173,7 +173,7 @@ gen_days as (
 ```
 Этот запрос я буду использовать и в дальнейшем.  
 Далее могу получить активность каждого дня. Для этого right join-ом присоединяю к таблице all_users_activity сгенерированный интервал. Группирую по дате и дню недели, и извлекаю дату, день недели, количество действий пользователей с помощью агрегатной функции count и кол-во самих пользователей, использую внутри count distinct, чтобы убрать повторы.
-```
+``` sql
 dayweek_activ as (
 	select gd.day_date as date, 
 	to_char(date(gd.day_date), 'Day') as day_week, 
@@ -190,7 +190,7 @@ dayweek_activ as (
 ![таблица](images/dayweek_activ.png)  
 
 Теперь можно посчитать общее количество действий через sum, а также усреднить полученные значения путем группировки по дням недели и узнать среднее количество активности функцией avg. Также возьму медиану кол-ва действий, так как она менее чувствительна к выбросам и её тоже полезно смотреть.
-```
+``` sql
 avg_dayweek_activ as (
 	select day_week, sum(action_cnt) as action_cnt, 
 	round(avg(action_cnt), 2) as avg_actions, 
@@ -210,7 +210,7 @@ avg_dayweek_activ as (
 
 ### Активность пользователей по часам дня
 Как и для прошлого запроса, сгенерирую интервал дат по часам от самой первой до самой последней активности, чтобы не потерять часы без активности. Обрезаю формат даты-времени до часа с помощью функции date_trunc
-```
+``` sql
 gen_hours as (
 	select date_trunc('hour', generate_series(
 	(select min(activ_date) from all_users_activity),
@@ -219,7 +219,7 @@ gen_hours as (
 )
 ```
 После этого получу активность каждого часа в каждом дне. Действия почти аналогичны предыдущему пункту про дни недели
-```
+``` sql
 hour_activ as (
 	select date(g.hour) as date, 
 	extract(hour from g.hour) as hour,
@@ -237,7 +237,7 @@ hour_activ as (
 ![таблица](images/hour_activ.png)
 
 Далее группирую по часам, считаю сумму и средне действий и среднее пользователей. Медиана здесь не показательна, т.к. слишком много нулей.
-```
+``` sql
 avg_hour_activ as (
 	select hour, sum(actions_cnt) as actions_cnt, sum(users_cnt) as users_cnt,
 	round(avg(actions_cnt), 2) as avg_actions,
@@ -256,7 +256,7 @@ avg_hour_activ as (
 ### Средняя длительность сессии
 Сессией буду считать цепочку действий пользователя на платформе, между которыми проходит не более 60 минут. Если прошло больше - будем считать это новой сессией. Длину сессии буду считать в минутах. Пользоваться буду созданнной ранее таблицей all_users_activity. 
 Для начала с помощью оконной функции lead найду время следующей активности пользователя и разницу между текущей и следующей активностью с помощью extract(epoch). Введу "флаг" new_session, равный 0 если разница между активностью меньше 60 и 1 в ином случае. 
-```
+``` sql
 activity_timediff as (
 	select *,
 	lead(activ_date) over w as next_activ,
@@ -271,7 +271,7 @@ activity_timediff as (
 ```
 
 Далее сделаю "маркеры" сессий, просуммировав флаги функцией sum(), используя её как оконную. Окно беру с начала до текущей строки. Это даст номер для каждой сессии пользователя. При этом, чтобы не портить разницу между активностью внутри сессии, обнуляю "переходную" активность - там, где разница между парой больше 60 минут, т.е. начинается новая сессия.  
-```
+``` sql
 session_markers AS (
     SELECT *,
     SUM(new_session) OVER (PARTITION BY user_id 
@@ -287,7 +287,7 @@ session_markers AS (
 ![таблица](images/session_markers.png)  
 
 После считаю длительность каждой сессии, суммируя все разницы между активностями внутри одной сессии через sum, группируя по user_id и session_id.
-```
+``` sql
 session_duration as (
 	select user_id, session_id, sum(new_diff) as duration
 	from session_markers
@@ -296,7 +296,7 @@ session_duration as (
 )
 ```  
 Теперь можно получить среднюю длительность сессии в общем через avg. Также можно взять медиану через percentile_disc.
-```
+``` sql
 avg_session_duration as (
 	select round(avg(duration)) as avg_minute,
 	round(percentile_disc(0.5) within group (order by duration)) as median_minute
@@ -307,7 +307,7 @@ avg_session_duration as (
 ![таблица](images/avg_session_duration.png)  
 
 А теперь посчитаем количество сессий и их среднюю длительность для каждого пользователя с помощью группировки. Для удобства возьмем из предыдущей CTE среднюю длительность с помощью подзапроса.  
-```
+``` sql
 user_session_info as (
 	select user_id, 
 	count(session_id) as session_cnt,
@@ -321,7 +321,7 @@ user_session_info as (
 ![таблица](images/user_session_info.png)  
 
 Помимо этого, можно посмотреть распределение длительностей сессий по перцентилям с шагом 0.1. Для этого использую generate_series(0.1, 1, 0.1), названный как perc, и команду percentile_cont.
-```
+``` sql
 duration_percentile as (
 	select perc, percentile_cont(perc) within group (order by avg_minute) as duration 
 	from user_session_info, pg_catalog.generate_series(0.1, 1, 0.1) perc
@@ -337,7 +337,7 @@ duration_percentile as (
 ### Самые популярные задачи  
 Популярность буду оценивать по двум критериям - количество пользователей, которые пытались решить эту задачу (таблица codesubmit) и сколько раз вообще пользователь взаимодействовал с задачей (запуск кода и проверка решения, таблицы coderun и codesubmit).
 Для первого критерия объединю таблицы codesubmit и my_users обычным join-ом, таблицу problem right join-ом, чтобы не потерять те задачи, которые вообще не решали, и таблицы languagetoproblem и language. Извлеку из полученной таблицы problem_id, complexity (сложность), название задания, язык програмирования для задачи, количество пользователей, которые пытались решить эту задачу, процент верных попыток, который буду искать через case и ранг задачи по кол-ву пользователей. Отсортирую по количеству пользователей.
-```
+``` sql
 problems_info as (
 	select p.id as problem_id, 
 	complexity, 
@@ -359,14 +359,14 @@ problems_info as (
 	group by p.id, complexity, p.name, lg.name
 	order by users_cnt desc
 )
-```  
+``` 
 Результат запроса:  
 ![таблица](images/problems_info.png)  
 
 Второй критерий - количество взаимодействий пользователя с задачей. Этот показатель тоже покажет, какие задачи популярные - может быть их не выставляли на проверку, т.к. не получалось, но при этом много работали с ней, потому что она интересная и т.д.
 В запросе для начала объединяю таблицы codesubmit и coderun через union all, записываю это в CTE problem_starts.  
 Далее к этой таблице присоединяю right join-ом problem, а затем languagetoproblem и language. Извлекаю problem_id, сложность, название задачи, язык программирования, кол-во "активаций" задачи и ранг по активациям. Ранг получаю для того, чтобы потом объединить starts_count и problems_info и сравнить полученные результаты - задачи с наибольшим кол-вом пользователей также и самые "трогаемые", или нет.
-```
+``` sql
 problem_starts as (
 	select problem_id 
 	from coderun cr
@@ -400,7 +400,7 @@ starts_count as (
 
 ### Топ 20 популярных задач
 Теперь можно объединить эти запросы и поискать самые популярные задачи по этим критериям. Я считаю, что кол-во пользователей, которые пытались решить задачу, важнее, поэтому сортирую по ней. Но с помощью второго критерия можно более правильно отранжировать задачи, например, если по кол-ву пользователей задачи мало отличаются, но у второй значительно больше активаций, то поставим её выше.
-```
+``` sql
 problems_rank as (
 	select sc.problem_id, 
 	sc.name,
@@ -429,7 +429,7 @@ Cамые популярные задачи - по SQL первой сложно
 ### Сколько у студента ушло попыток на решение задачи
 Т.е. какая по очередности попытка была первой правильной.  
 Для начала я объединю таблицу codesubmit с my_users. Возьму id пользователя, задачи, параметр is_false и через оконную функцию номер строки, сортируя по дате (т.е. по очередности).
-```
+``` sql
 rank_codesubmit as (
 	select user_id, 
 	problem_id, 
@@ -442,7 +442,7 @@ rank_codesubmit as (
 )
 ```  
 Далее из полученной таблицы возьму только те строки, где is_false = 0 (т.е успешные попытки), сгруппирую по id пользователя и задачи и возьму минимальный номер строки, тем самым получив номер первой успешной попытки.
-```
+``` sql
 min_user_attempts as (
 	select user_id, problem_id,
 	min(row_num) as right_attempt
@@ -458,7 +458,7 @@ min_user_attempts as (
 
 ### К каким задачам приступал студент и какие он решил  
 Объединим таблицу codesubmit и my_users. Сгруппирую по user_id, username, problem_id. Извеку id пользователя, его ник, id проблемы, и булево значение done, равное True, если задача хоть один раз была решена правильно.
-```
+``` sql
 user_problems as (
 	select user_id, username, problem_id,
 	case when min(is_false) = 0 then true else false end as done
@@ -474,7 +474,7 @@ user_problems as (
 
 Дополнительно к этому запросу можно посчитать сколько всего задач он пытался решить и сколько в итоге решил.
 Для этого использую функцию count как оконную, считая кол-во задач, кол-во решенных задач через case и нахожу процент от общего числа.
-```
+``` sql
 user_problems_info as (
 	select *,
 	count(problem_id) over w as cnt_problems,
@@ -492,7 +492,7 @@ user_problems_info as (
 
 ### Процент успешных попыток пользователя по задаче и в общем  
 Для нахождения процента успешных попыток для каждой задачи опять присоединяю к codesubmit таблицу my_users. Группирую по id пользователя и проблемы, извлекаю user_id, problem_id, кол-во верных попыток, кол-во всех попыток и отношение первого ко второму в процентах. Это позволит посмотреть, как хорошо пользователь решает задачи.
-```
+``` sql
 user_attempts_to_problem as (
 	select user_id, problem_id,
 	count(case when is_false = 0 then 1 end) as right_attempt_cnt,
@@ -508,7 +508,7 @@ user_attempts_to_problem as (
 ![таблица](images/user_attempts_to_problem.png)  
 
 Теперь можно усреднить эти значения, сгруппировав по пользователю
-```
+``` sql
 user_avg_right_attempt as (
 	select user_id, 
 	round(avg("right (%)"), 2) as "right (%)"
@@ -525,7 +525,7 @@ user_avg_right_attempt as (
 ### На каких задачах возникают трудности
 Посмотрим, на какие задачи уходит больше всего попыток и у каких задач низкий уровень правильных ответов  
 Для изучения среднего кол-ва попыток для решения задачи обращусь к ранее созданной таблице min_user_attempts, сгруппирую по задаче и получу среднее через avg, округляя до целого.
-```
+``` sql
 avg_attempts_for_problem as (
 	select problem_id, round(avg(right_attempt), 2) as avg_attempt
 	from min_user_attempts
@@ -536,7 +536,7 @@ avg_attempts_for_problem as (
 ![таблица](images/avg_attempts_for_problem.png)  
 
 Далее к этой таблице можно присоединить problems_info:  
-```
+``` sql
 problems_attempts_info as (
 	select atp.*, pi.perc_right,
 	pi.users_cnt, pi.name, 
@@ -555,7 +555,7 @@ problems_attempts_info as (
 
 ### Какое количество пользователей решает задачи разной сложности и разных языков
 Для среза по сложности использую таблицы codesubmit, my_users и problem. Группирую по сложности и извлекаю сложность, процент успешных попыток через count(case...), кол-во всех попыток, кол-во решаемых задач этой сложности, и кол-во уникальных пользователей, которые решали задачи этой сложности  
-```
+``` sql
 perc_right_with_compl as (
 	select complexity, 
 	round(count(case when is_false = 0 then 1 end)*100.0/count(*), 2) as perc_right,
@@ -575,7 +575,7 @@ perc_right_with_compl as (
 ![таблица](images/avg_attempts_for_problem.png)  
 
 Для среза по языкам алгоритм похожий, но дополнительно я присоединяю таблицы languagetoproblem и language. Группирую по языку и извлекаю ЯП вместо сложности.
-```
+``` sql
 perc_right_with_lang as (
 	select l.name, round(count(case when is_false = 0 then 1 end)*100.0/count(*), 2) as perc_right,
 	count(*) as submit_cnt,
@@ -603,7 +603,7 @@ perc_right_with_lang as (
 
 ### Сколько раз приступали к каждому тесту
 Использую таблицы teststart и my_users. Группирую по test_id, извлекаю id теста и кол-во раз, когда его начинали. Сортирую по убыванию кол-ва, дабы посмотреть на самые популярные тесты.
-```
+``` sql
 teststart_count as (
 	select test_id, t.name, count(*) as start_cnt
 	from teststart ts
@@ -623,7 +623,7 @@ teststart_count as (
 
 ### Сколько раз отдельный студент начинал тест
 К таблице teststart присоединяю my_users через right_join, чтобы не потерять тех, кто вообще не приступал к тестам. Группирую по mu.id, считаю кол-во уникальных тестов, которые решал пользователь. Сортирую по убыванию test_cnt, чтобы видеть тех, кто хоть что-то решал.
-```
+``` sql
 users_test as (
 	select mu.id as user_id, count(distinct test_id) as test_cnt
 	from teststart ts
@@ -640,7 +640,7 @@ users_test as (
 По результатам запроса видно, что всего лишь 14 пользователей решали хоть один тест. Пользователь 43 - самый активный.   
 После таких скудных результов мне стало интересно, а какой процент пользователей от общего кол-ва вообще приступали к тестам, и сколько тогда приходится тестов на человека.
 Для этого из users_test кол-во тестирующихся юзеров, полученное с помощью count(case...), делю на общее кол-во пользователей, так я получаю процент тех, кто решал тесты, и также через avg(test_cnt) получаю среднее кол-во тестов на человека.
-```
+``` sql
 testing_users as (
 	select round(count(case when test_cnt > 0 then 1 end)*100.0/count(*), 2) as perc_testing_users,
 	round(avg(test_cnt), 2) as avg_test_cnt
@@ -664,7 +664,7 @@ users_test_info as (
 ### Какие ответы давал пользователь в тесте 
 Здесь будет большой запрос.  
 Беру таблицу testanswer, join-ом присоединяю к ней testquestion, right join-ом testresult, чтобы не потерять "пустые" ответы, к этому присоединяю my_users и test. Добавляю условие, что ответ пользователя должен совпадать с одним из возможнных ответов в вопросе, или же быть null-ом. Группирую по user_id, question_id, вопросу, test_id, answer_id, датой создания и именем теста. Делаю это, чтобы убрать множественный повторяющийся null. Извлекаю отсюда user_id, question_id, сам вопрос, id ответа, корректен ли он (делаю это через агрегатную функцию bool_and (т.к. использую группировку) и case), дату создания, ранг через оконную функцию, чтобы можно было отличить разные прохождения теста, id и имя теста. Полученную махину сортирую.
-```
+``` sql
 users_answers as (
 	select user_id, 
 	t.question_id, 
@@ -696,7 +696,7 @@ users_answers as (
 
 ### Какие тесты решал каждый пользователь, сколько у него было правильных ответов
 Буду использовать полученную прошлым запросом таблицу users_answers.  Сгруппирую по user_id, test_id, rank_order и date(created_at). Извлеку эти же параметры, дополнив также кол-вом вопросов в тесте, кол-вом правильных ответом и процентом правильных ответов.
-```
+``` sql
 users_tests_info as (
 	select user_id, test_id, date(created_at) as created_at, rank_order, count(*) as all_quest, 
 	count(case when is_correct is true then 1 end) as right_answer,
@@ -713,7 +713,7 @@ users_tests_info as (
 ### Статистика прохождений тестов
 В дополнение к предыдущей таблице посмотреть на общую статистику прохождения каждого теста  
 Для этого делаю join таблицы test, группирую по id и названию теста и извлекаю id, название, кол-во запусков, кол-во вопросов через max(), среднее кол-во и средний процент правильных ответов
-```
+``` sql
 testresult_research as (
 	select test_id, t.name, count(*) as running_cnt,
 	max(all_quest) as all_quest,
@@ -735,7 +735,7 @@ testresult_research as (
 
 ### Сколько всего проверок решений и сколько на пользователя 
 Для начала через union all таблиц codesbmit и testresult получу id пользователей, работы которых нужно проверить (задача или тест)  
-```
+``` sql
 all_checks as (
 	select user_id
 	from codesubmit c
@@ -749,7 +749,7 @@ all_checks as (
 )
 ```  
 Далее сгруппирую по id и получу кол-во проверок по пользователю  
-```
+``` sql
 all_user_checks as( 
 	select user_id, count(user_id) as cnt_check
 	from all_checks
@@ -760,7 +760,7 @@ all_user_checks as(
 ![таблица](images/all_user_checks.png)  
 
 И затем просуммирую всё количество проверок, получив общее кол-во, получу среднее кол-во проверок на пользователя и медиана проверок.
-```
+``` sql
 checks_info as (
 	select sum(cnt_check) as cnt_check,
 	round(avg(cnt_check)) as avg_check_for_user,
@@ -774,7 +774,7 @@ checks_info as (
 С этой информацией финансовый директор может просчитать, насколько выгодно сотрудничество с IT Resume. Например, если для проверок нужен бы был специально нанятый для этого человек, которому платили бы за каждрую проверку, можно было бы посчитать выгоду от автоматизации проверки.  
 
 ### Количество задач и тестов
-```
+``` sql
 problems_and_tests_cnt as (
 	select 'problems' as type, count(id) as cnt
 	from problem
@@ -788,7 +788,7 @@ problems_and_tests_cnt as (
 
 ### Количество пришедших пользователей по месяцам
 Возьму таблицу my_users, извлеку с помощью to_char месяц регистрации, сгруппирую по нему и посчитаю кол-во пришедших уникальных пользователей.  
-```
+``` sql
 users_joined_on_month as (
 	select to_char(date_joined, 'YYYY-MM') as month, count(distinct id) as cnt_joined
 	from my_users
@@ -802,7 +802,7 @@ users_joined_on_month as (
 
 ### MAU и WAU
 Для начала найду кол-во активных пользователей (т.е. тех, кто делал хоть что-то кроме захода) по месяцам.
-```
+``` sql
 activ_users_on_month as (
 	select to_char(activ_date, 'YYYY-MM') as month, count(distinct user_id) as users_cnt
 	from days_users_activity ua
@@ -814,7 +814,7 @@ activ_users_on_month as (
 ![таблица](images/mau.png)   
 
 Далее объединяю две последние полученные таблицы через full join по совпадению месяцев, убираю те, где месячная активность пользователей была меньше 4. Извлекаю месяц, месячную активность, количество пришедших в этом месяце, суммарное кол-во пришедших пользователей за этот и прошлые месяца, отношение кол-ва активных в этом месяце пользователей к общему числу пришедних, и среднее кол-во активности за все месяцы. 
-```
+``` sql
 mau_research as (
 	select m.month as month, users_cnt, coalesce (cnt_joined, 0) as cnt_joined, 
 	sum(cnt_joined) over (order by coalesce(m.month, u.month)) as all_users,
@@ -833,7 +833,7 @@ mau_research as (
 Наибольшая активность была 2022-01 и в 2022-04. При этом во втором случае больше половины было "старых" пользователей - тех, кто пришел до этого. Можно увидеть, что далеко не все пришедшие пользователи остаются на платформе на длительный срок. Возможно они получают то, за чем пришли, и уходят довольными, либо же наоборот, их что-то не устраивает на платформе, поэтому они перестают заходить.  
 
 Проделаю то же самое и для недель:
-```
+``` sql
 users_joined_on_week as (
 	select to_char(date_joined, 'YYYY-WW') as week, count(distinct id) as cnt_joined
 	from my_users
@@ -841,7 +841,7 @@ users_joined_on_week as (
 )
 ```  
 Дополнительно генерирую интервал недель, чтобы использовать join-ом и не потерять недели без активности
-```
+``` sql
 gen_weeks as (
 	select to_char(generate_series(
 	(select min(activ_date) from days_users_activity), 
@@ -855,7 +855,7 @@ gen_weeks as (
 Можно видеть, что первая активная неделя была 2021-38.
 
 Найду кол-во активных пользователей по неделям   
-```
+``` sql
 activ_users_on_week as (
 	select week, count(distinct user_id) as users_cnt
 	from days_users_activity ua
@@ -866,7 +866,7 @@ activ_users_on_week as (
 )
 ```
 Ищу процент активных пользователей, метрику WAU
-```
+``` sql
 wau_research as (
 	select coalesce(w.week, uw.week) as week, coalesce (users_cnt, 0) as users_cnt,
 	coalesce (cnt_joined, 0) as cnt_joined,
@@ -888,7 +888,7 @@ wau_research as (
 Буду считать не просто retention,а rolling retention, и обратный для него churn rate. Выбор использовать именно rolling retention обусловлен тем, что платформа IT Resume - образовательная, и для неё не сильно важно, чтобы пользователи заходили каждый день. Человек может отдыхать в выходные и заниматься обучением в будние дни, или наоборот, или как угодно иначе. Поэтому важно оценить не конкретные дни, а промежутки, например, какой процент людей заходил хотя бы раз после 6 дня захода на платформу.  
 Считать буду по когортам - в какой месяц пользователь зарегистрировался, к такой когорте он и принадлежит.  
 Для начала получу таблицу заходов пользователей. Для этого объединю таблицы userentry и my_users. Извлеку id пользователя, дату регистрации, дату захода, разницу между ними и когорту пользователя с помощью to_char.
-```
+``` sql
 entry_info as (
 	select u.user_id, date(date_joined) as joined, date(entry_at) as entry,  
 	extract(days from entry_at - date_joined) as diff,
@@ -903,7 +903,7 @@ entry_info as (
 ![таблица](images/entry_info.png)  
 
 Далее через длинный запрос, в котором я считаю отношение кол-ва зашедших хотя бы раз в определенный день и все после него к кол-ву зашедших в 0-вой день (т.е. в день регистрации). Считаю это через distinct case user_id, у которых разница (diff) больше или равен указанному значению. Для отслеживания выберу 0, 1, 3, 7, 14, 21, 30, 45, 60, 90 и 120 дни - их достаточно, чтобы оценить заходы пользователь. Группирую по когортам, и дополнительно задаю условие, чтобы в когорте было больше 3 человек (иначе статистика будет совсем нерепрезентативна) 
-```
+``` sql
 rolling_retention as (
 	select cohort, count(distinct user_id) as cohort_size,
 	round(count(distinct case when diff >= 0 then user_id end)*100.0/
@@ -940,7 +940,7 @@ rolling_retention as (
 Первая когорта (2021-11) - самая большая и самая устойчивая. Следующие идут по убыванию. Да, есть когорта за 2022-03, но она слишком маленькая. На таблице видно, что пользователи достаточно плавно утекают, и это продолжается до 2 месяца, затем идёт более резкий спад.
 
 Посчитаю rolling churn rate, вычитая rolling retention из 100:
-```
+``` sql
 Rolling_churn_rate as (
 	select cohort, 100 - "1 (%)" as "1 (%)",
 	100 - "3 (%)" as "3 (%)",
@@ -961,7 +961,7 @@ Rolling_churn_rate as (
 
 Для начала посчитаю, какое значение codecoins в сумме на каждый тип.
 Для этого объединяю таблицы transaction, transactiontype и my_users. Группирую по type_id и description, извлекаю эти два параметра,сумму значений типа и кол-во таких транзаций.
-```
+``` sql
 transaction_type_sum as (
 	select type_id, description,
 	sum(t.value) as summ,
@@ -978,7 +978,7 @@ transaction_type_sum as (
 ![таблица](images/transaction_type_sum.png)  
 
 Теперь можно просуммировать значения транзакций-списаний и транзакций-начислений:
-```
+``` sql
 all_transactions_info as (
 	select sum(summ) as all_transactions_value,
 	sum(case when type_id in (1, 23, 24, 25, 26, 27, 28) then cnt_actions end) as write_off_cnt,
@@ -998,7 +998,7 @@ all_transactions_info as (
 ### Среднее значение списаний и начислений на пользователя
 Сначало найду списания и начисления коинов по каждому пользователю  
 Для этого объединяю таблицы transaction и my_users, группирую по user_id, извлекаю user_id, и через case суммирую сначала транзакции с типом списаний, затем с типом начислений, а затем разница между этими показателями, тоже через case. Т.к. у некоторых пользователей может не быть списаний или начислений, использую coalesce, чтобы заменить null-ы на 0.
-```
+``` sql
 users_transactions as (
 	select user_id,
 	coalesce(sum(case when type_id in (1, 23, 24, 25, 26, 27, 28) then -value end), 0) as write_off,
@@ -1016,7 +1016,7 @@ users_transactions as (
 Можно увидеть, что даже на первых 10 строках данных много нулей на списаниях. Т.к. я не знаю о том, что доступно для корпоративных студентов, могу предположить, что для них доступно большая часть задач и им не нужно тратить codecoin-ы для открытия новых задач или получения подсказок, т.к. у них и так, в большинстве случаев, их достаточно для комфортного изучения материала.  
 
 Теперь усредню эти показатели с помощью avg:  
-```
+``` sql
 avg_balance as (
 	select round(avg(write_off), 2) as write_off, round(avg(accruals), 2) as accruals, 
 	round(avg(balance), 2) as balance
@@ -1029,7 +1029,7 @@ avg_balance as (
 Значения списаний дейсвительно очень маленькие, в основном пользователи только копят коины и, соответственно, имеют высокий баланс.  
 
 Видя такие показатели, мне стало интересно, а за что пользовотели получили больше всего коинов и куда их тратят. Поэтому, используя созданную ранее таблицу transaction_type_sum, я отобрал сначала только начисления, а потом - только списания, и отсортировал по размерам сумм.
-```
+``` sql
 select * 
 from transaction_type_sum 
 where type_id not in (1, 23, 24, 25, 26, 27, 28)
@@ -1045,7 +1045,7 @@ order by summ desc
 ### Распределение баланса пользователей
 Последним интересным показателем для фин. директора я посчитал разбивку баланса пользователей по перцентилям от 0.1 до 1. Т.е если пользователь в 0.1 перцентиле, значит его баланс ниже 90% всех показателей балансов.  
 Для нахождения распределения я буду использовать созданную ранее таблицу users_transactions и созданый с помощью generate_series список от 0.1 до  - это будут перцентили perc. Группирую по перцентилю perc, извлекаю перцентиль и с помощью команды percentile_cont(perc) получаю значение баланса, соответсвующего опредленному значению.
-```
+``` sql
 percentile_balance as (
 	select perc, percentile_disc(perc) within group (order by balance) as balance
 	from users_transactions, generate_series(0.1, 1, 0.1) as perc
@@ -1069,7 +1069,7 @@ percentile_balance as (
 [Исследование MAU и WAU](#mau-и-wau) я также проводил в блоке для финансового директора.  
 Для генерального директора проведу также исследование DAU.
 Для начала я сгенерирую интервал дат, от самой первой до самой последней зафиксированной активности. Делается это, чтобы потом объединить эту таблицу с активностью пользователей и не потерять дни без активности.  
-```
+``` sql
 gen_days as (
 	select date(generate_series(
 	(select min(activ_date) from days_users_activity), 
@@ -1078,7 +1078,7 @@ gen_days as (
 )
 ```  
 Далее делаю full join сгенерированного интервала к таблице days_users_activity.
-```
+``` sql
 activ_users_on_day as (
 	select day_date, count(distinct user_id) as users_cnt
 	from days_users_activity ua
@@ -1092,7 +1092,7 @@ activ_users_on_day as (
 ![таблица](images/activ_users_on_day.png)  
 
 А дальше через оконную функцию дополнительно выведу среднее значение, т.е. наше DAU:
-```
+``` sql
 DAU as (
 	select *, round(avg(users_cnt) over ()) as dau
 	from activ_users_on_day
@@ -1108,7 +1108,7 @@ DAU равен 3, хоть показатель и маленький, но он
 ### Общее количество входов на платформу
 Найду кол-во заходов в месяц (считаю с повторами, т.е. если пользователь заходил несколько раз, то тоже считается).  
 Для этого объединяю таблицы userentry и my_users. Извлекаю из entry_at год-месяц с помощью to_char, группирую по месяцам, считаю кол-во строк (т.е. кол-во входов), кол-во уникальных пользователей и ранг по месяцу. Это использую дальше, чтобы взять среднее трех последних месяцев.  
-```
+``` sql
 months_userentry as (
 	select  to_char(entry_at, 'YYYY-MM') as month, count(*) as entry_cnt,
 	count(distinct user_id) as user_cnt,
@@ -1126,7 +1126,7 @@ months_userentry as (
 Данные схожи с таблицей [mau_research](#mau-и-wau). Пик заходов осень-зима 21-22 года. 2021-09 2 пользователя заходили 26 раз - скорее всего какой-то один пользователь заходил очень часто.  
 
 Посчитаю среднее число заходов в месяц. Также найду медиану для более точных данных. Использую функции avg и percentile_disc
-```
+``` sql
 avg_months_userentry as (
 	select round(avg(entry_cnt)) as month_avg_entries,
 	percentile_disc(0.5) within group (order by entry_cnt) as month_median_entries,
@@ -1142,7 +1142,7 @@ avg_months_userentry as (
 
 Также можно посчитать среднее для последних трех месяцев. Считать медиану не буду, т.к. всего лишь из трех значений она мало что будет значить.
 Для этого как раз использую ранг месяца, который получил в таблице months_userentry.
-```
+``` sql
 last_3_month_entries as (
 	select round(avg(entry_cnt)) as avg_last_3_month_entries,
 	round(avg(user_cnt)) as avg_last_3_month_users
@@ -1163,7 +1163,7 @@ last_3_month_entries as (
 ### Процент заходов без активности
 Посчитаю тех, кто заходил на платформу, но больше за этот заход ничего не делал.
 Для этого объединю userentry, my_users и days_users_activity с помощью left join, чтобы не потерять те сессии, в которых активности как раз и не будет (дата активности activ_date будет null). Останется посчитать кол-во тех сессий, в которых activ_date равен null и делать это на кол-во всех сессий, что и будет процент без активности 
-```
+``` sql
 entries_without_activ as (
 	select round(count(case when activ_date is null then 1 end)*100.0/count(*),2) as perc_without_activ
 	from userentry u
@@ -1187,7 +1187,7 @@ entries_without_activ as (
 Lifetime буду считать по заходам пользователя. Если пользователь заходит в течении 30 дней от прошлого своего захода, то его "жизнь" продолжается. Если же он заходит позже 30 дней, то он будет считаться как бы новым пользователем. Так я отмерю длительность "жизни" каждого пользователя, а потом усредню.  
 Действовать я буду примерно также, как считал длительность сессии пользователя.  
 Для начала найду разницу между заходами через оконную функцию lead. Использую объединение таблиц userentry и my_users. Также не буду брать июль и август 2021 года, потому что там слишком мало пользователей, которые, возможно, являются тестировщиками.
-```
+``` sql
 users_entries_different as (
 	select user_id, date(entry_at) as entry, 
 	date(lead(entry_at) over w) as next_entry,
@@ -1200,7 +1200,7 @@ users_entries_different as (
 )
 ```  
 Уберу строки с последними заходами (где next_entry равен null). Проверю, новая ли это "жизнь" у пользователя через case, поставив маркер 1, если новая. 
-```
+``` sql
 lifes_markers as (
 	select *, case 
 		when diff < 30 then 0
@@ -1214,7 +1214,7 @@ lifes_markers as (
 ![таблица](images/lifes_markers.png)  
 
 Далее, суммируя маркеры, получу id "жизни" пользователя.  
-```
+``` sql
 lifes_id as (
 	select *, sum(new_user_life) over (partition by user_id 
 	rows between unbounded preceding and current row) as user_life_id
@@ -1223,7 +1223,7 @@ lifes_id as (
 ```
 
 А после, группируя по пользователю и id сессии, просуммирую все разницы между заходами, получив тем самым длительность "жизни". Дополнительно обнуляю разницу в заходах между разными "жизнями".
-```
+``` sql
 users_life_duration as (
 	select user_id, user_life_id, sum(case when new_user_life = 1 then 0 else diff end) as duration
 	from lifes_id
@@ -1234,7 +1234,7 @@ users_life_duration as (
 ![таблица](images/users_life_duration.png)    
 
 И теперь получу среднее через avg. Это и будет lifetime.
-```
+``` sql
 LT as (
 	select round(avg(duration)) as duration
 	from users_life_duration
@@ -1248,7 +1248,7 @@ LT as (
 <br> 
 
 ### Сколько всего задач и тестов
-```
+``` sql
 problems_and_tests_cnt as (
 	select 'problems' as type, count(id) as cnt
 	from problem
@@ -1261,7 +1261,7 @@ problems_and_tests_cnt as (
 ![таблица](images/problems_and_tests_cnt.png)  
 
 Также можно посмотреть на кол-во задач по языку:
-```
+``` sql
 language_problems_count as (	
 	select  l.name, count(*) as problem_cnt,
 	sum(count(*)) over () as all_problems
@@ -1274,7 +1274,7 @@ language_problems_count as (
 Результат запроса:  
 ![таблица](images/language_problems_count.png)  
 И по сложности:
-```
+``` sql
 complexity_problems_count as (
 	select complexity, count(*)
 	from problem
@@ -1294,7 +1294,7 @@ complexity_problems_count as (
 ![таблица](images/user_problems.png)  
 Чтобы получить, сколько всего было решено задач, посчитаю кол-во тех задач, которые студент смог решить. 
 Отберу только те задачи, которые были решены, и посчитаю их кол-во.   
-```
+``` sql
 solved_problems_cnt as (
 	select count(*) as cnt
 	from user_problems
@@ -1304,7 +1304,7 @@ solved_problems_cnt as (
 Результат запроса:  
 ![таблица](images/solved_problems_cnt.png)  
 Чтобы посмотреть в разрезе сложности, можно к user_problems присоединить таблицу problem и сгруппировать по сложности.  
-```
+``` sql
 solved_problems_by_complexity_cnt as (
 	select complexity, count(*) as cnt
 	from user_problems up
@@ -1317,7 +1317,7 @@ solved_problems_by_complexity_cnt as (
 Результат запроса:  
 ![таблица](images/solved_problems_by_complexity_cnt.png)  
 Для разбивки по языкам нужно присоединять таблицы languagetoproblem и language и группировать по языку.  
-```
+``` sql
 solved_problems_cnt_by_lang as (
 	select l.name, count(*) as cnt
 	from user_problems up
@@ -1370,7 +1370,7 @@ solved_problems_cnt_by_lang as (
 ### Среднее процента решенных студентом задач относительно всех пробуемых им задач
 Для получения ответа буду использовать таблицу user_problems_info, полученную в блоке преподавателя [здесь](#к-каким-задачам-приступал-студент-и-какие-он-решил). В этой таблице есть кол-во задач, к которым студент приступал, и кол-во тех, которые решил. Эти значения получены через оконную функцию, поэтому повторяются много раз.  
 Для начала я посчитаю процент решенных задач по каждому студенту. Для этого сгруппирую по пользователю, и извлеку отношения кол-ва решенных задач ко всем пробуемых. Т.к. эти значения у каждого студента одинаковы (т.к. я использовал оконную функцию по окну студента), то для избегания ошибок я буду получать максимальное число с помощью max.
-```
+``` sql
 avg_solved_problems_per_user as (
 	select user_id, max(cnt_right)*100.0/max(cnt_problems) as perc_right
 	from user_problems_info 
@@ -1378,7 +1378,7 @@ avg_solved_problems_per_user as (
 )
 ```  
 Далее я посчитаю среднее и медиану:
-```
+``` sql
 avg_solved_problems as (
 	select round(avg(perc_right), 2) as avg_solved, 
 	percentile_cont(0.5) within group (order by perc_right) as median_solved
@@ -1391,7 +1391,7 @@ avg_solved_problems as (
 И среднее, и медиана очень высоки - как минимум половина пользователей решает все задачи из тех, которые хоть раз отправляет на проверку. 
 Но можно попробовать посмотреть на процент решения тех, которые пользователь только начинал делать (запускал тест своего кода, но не отправлял его на проверку). Скорее всего в данном случае результаты будут хуже.  
 Для этого буду использовать коррелированный подзапрос: буду брать user_id, problem_id из таблицы problem_starts (получал её в блоке преподавателя) и результат коррелированного подзапроса из таблицы user_problems, который выдает, решил ли пользователь задачу или нет.
-```
+``` sql
 users_coderun_problems as (
 	select distinct ps.user_id, ps.problem_id,
 	coalesce((
@@ -1405,7 +1405,7 @@ users_coderun_problems as (
 ![таблица](images/users_coderun_problems.png)  
 
 Далее группирую полученные значения по user_id, считаю процент решенных задач.   
-```
+``` sql
 users_perc_right_per_coderun_problems as (
 	select user_id, count(case when done is true then 1 end)*100.0/count(*) as perc_solved
 	from users_coderun_problems
@@ -1413,7 +1413,7 @@ users_perc_right_per_coderun_problems as (
 )
 ```  
 А затем считаю среднее полученных значений и медиану.  
-```
+``` sql
 avg_solved_coderun_problems as (
 	select round(avg(perc_solved), 2) as avg_solved,
 	percentile_cont(0.5) within group (order by perc_solved)  as median_solved
@@ -1433,7 +1433,7 @@ avg_solved_coderun_problems as (
 ### Сколько в среднем попыток на задачу определенной сложности или ЯП, если задача была выполнена  
 В блоке преподавателя в блоке [изучения трудних задач](#на-каких-задачах-возникают-трудности) я получил таблицу problems_attempts_info, в которой по каждой задачи идет среднее число попыток для её решения.  
 Используя эту таблицу и группируя по сложности, можно получить среднее число попыток на задачу определенной сложности  
-```
+``` sql
 attempts_at_complexity as (
 	select complexity, round(avg(avg_attempt), 2) as avg_attempt
 	from problems_attempts_info
@@ -1445,7 +1445,7 @@ attempts_at_complexity as (
 
 Можно увидеть, что самые сложные задачи со сложностью 3 уходит меньше попыток, чем на задачи сложности 2. Это можно объяснить, что, во-первых, самые сложные задачи решает меньше людей, во-вторых, пользователь действительно обучается новым навыкам, и поэтому после легких и средних задач он спокойно может решать и сложные.  
 Группируя по ЯП, получим:  
-```
+``` sql
 attempts_at_language as (
 	select lang, round(avg(avg_attempt), 2) as avg_attempt
 	from problems_attempts_info
@@ -1464,7 +1464,7 @@ attempts_at_language as (
 
 ### Есть ли задачи, которые вообще не трогали  
 Ранее я создавал таблицу problem_starts, в которой есть все старты задач (то есть запуск кода в coderun и проба решения в codesubmit). Извлеку из таблицы problem все задачи, которых нет в problem_starts. Сделаю условие, чтобы они были видны (is_visible=True). 
-```
+``` sql
 not_trying_problems as (
 	select *  
 	from problem
@@ -1478,14 +1478,14 @@ not_trying_problems as (
 
 ### Сколько задач в среднем решает пользователь  
 В блоке преподавателя, отвечая на вопрос про [задачи студента](#к-каким-задачам-приступал-студент-и-какие-он-решил), я получил таблицу user_problems_info. Извлекая уникальные строки user_id, cnt_right cnt_problems и right (%) через distinct, получу таблицу users_info
-```
+``` sql
 users_info as (
 	select distinct user_id, cnt_right, cnt_problems, "right (%)"
 	 from user_problems_info
 )
 ```  
 И затем получу среднее число задач и средний процент решенных задач:
-```
+``` sql
 avg_cnt_solved_problems as (
 	select round(avg(cnt_right)) as cnt_right, 
 	round(avg(cnt_problems)) as cnt_problems,
@@ -1518,7 +1518,7 @@ from perc_right_with_compl
 
 ### К каким тестам не приступали
 В данном запросе буду использовать таблицы test, teststart и my_users. Извлеку все тесты из test, к которые не приступали корпоративные пользователи my_users. Сделаю это с помощью подзапроса и where in.
-```
+``` sql
 not_starting_test as (
 	select * from test
 	where id not in (
