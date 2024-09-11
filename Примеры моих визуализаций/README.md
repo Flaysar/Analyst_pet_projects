@@ -1,4 +1,4 @@
-Здесь лежит часть созданных мной дашбордов. Подробнее можно посмотреть в моем [проекте исследования IT Resume](https://github.com/Flaysar/Analyst_pet_projects/tree/main/IT_Resume_analysis)  
+Здесь лежит часть созданных мной дашбордов в Metabase. Подробнее можно посмотреть в моем [проекте исследования IT Resume](https://github.com/Flaysar/Analyst_pet_projects/tree/main/IT_Resume_analysis)  
 ![таблица](Dashboards/Преподаватель-1.png)  
 ![таблица](Dashboards/Преподаватель-2.png)  
 ![таблица](Dashboards/Генеральный_директор-1.png)  
